@@ -2,7 +2,7 @@ from collections import Counter
 
 from django.db import models
 
-import api.util as util
+from api import util
 from api.models.person import Person
 from api.models.photo import Photo
 from api.models.user import User, get_deleted_user
@@ -56,11 +56,10 @@ class AlbumAuto(models.Model):
             for photo in photos:
                 if (
                     photo.geolocation_json
-                    and "features" in photo.geolocation_json.keys()
+                    and "places" in photo.geolocation_json.keys()
+                    and len(photo.geolocation_json["places"]) > 0
                 ):
-                    for feature in photo.geolocation_json["features"]:
-                        if feature["place_type"][0] == "place":
-                            places.append(feature["text"])
+                    places = photo.geolocation_json["places"]
 
                 timestamps.append(photo.exif_timestamp)
 

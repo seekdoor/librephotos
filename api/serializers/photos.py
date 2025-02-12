@@ -3,12 +3,11 @@ import json
 from rest_framework import serializers
 
 from api.image_similarity import search_similar_image
-from api.models import Photo
+from api.models import AlbumDate, File, Photo
 from api.serializers.simple import SimpleUserSerializer
 
 
-class PigPhotoSerilizer(serializers.ModelSerializer):
-
+class PhotoSummarySerializer(serializers.ModelSerializer):
     id = serializers.SerializerMethodField()
     dominantColor = serializers.SerializerMethodField()
     aspectRatio = serializers.SerializerMethodField()
@@ -34,14 +33,21 @@ class PigPhotoSerilizer(serializers.ModelSerializer):
             "video_length",
             "rating",
             "owner",
+            "exif_gps_lat",
+            "exif_gps_lon",
+            "removed",
+            "in_trashcan",
         )
 
+    # TODO: Rename this field to image_hash
     def get_id(self, obj) -> str:
         return obj.image_hash
 
+    # TODO: Rename this field to aspect_ratio
     def get_aspectRatio(self, obj) -> float:
         return obj.aspect_ratio
 
+    # TODO: Remove this field in the future
     def get_url(self, obj) -> str:
         return obj.image_hash
 
@@ -55,7 +61,7 @@ class PigPhotoSerilizer(serializers.ModelSerializer):
         if obj.exif_timestamp:
             return obj.exif_timestamp.isoformat()
         else:
-            None
+            return ""
 
     def get_video_length(self, obj) -> int:
         if obj.video_length:
@@ -63,6 +69,7 @@ class PigPhotoSerilizer(serializers.ModelSerializer):
         else:
             return ""
 
+    # TODO: Remove this field in the future
     def get_birthTime(self, obj) -> str:
         if obj.exif_timestamp:
             return obj.exif_timestamp
@@ -79,8 +86,9 @@ class PigPhotoSerilizer(serializers.ModelSerializer):
     def get_type(self, obj) -> str:
         if obj.video:
             return "video"
-        else:
-            return "image"
+        if obj.main_file and obj.main_file.embedded_media.count() > 0:
+            return "motion_photo"
+        return "image"
 
 
 class GroupedPhotosSerializer(serializers.ModelSerializer):
@@ -98,8 +106,8 @@ class GroupedPhotosSerializer(serializers.ModelSerializer):
     def get_location(self, obj) -> str:
         return obj.location
 
-    def get_items(self, obj) -> PigPhotoSerilizer(many=True):
-        return PigPhotoSerilizer(obj.photos, many=True).data
+    def get_items(self, obj) -> PhotoSummarySerializer(many=True):
+        return PhotoSummarySerializer(obj.photos, many=True).data
 
 
 class PhotoEditSerializer(serializers.ModelSerializer):
@@ -109,7 +117,8 @@ class PhotoEditSerializer(serializers.ModelSerializer):
             "image_hash",
             "hidden",
             "rating",
-            "deleted",
+            "in_trashcan",
+            "removed",
             "video",
             "exif_timestamp",
             "timestamp",
@@ -130,6 +139,29 @@ class PhotoHashListSerializer(serializers.ModelSerializer):
         fields = ("image_hash", "video")
 
 
+class PhotoDetailsSummarySerializer(serializers.ModelSerializer):
+    photo_summary = serializers.SerializerMethodField()
+    album_date_id = serializers.SerializerMethodField()
+    processing = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Photo
+        fields = ("photo_summary", "album_date_id", "processing")
+
+    def get_photo_summary(self, obj) -> PhotoSummarySerializer:
+        return PhotoSummarySerializer(obj.get()).data
+
+    def get_processing(self, obj) -> bool:
+        return obj.get().aspect_ratio is None
+
+    def get_album_date_id(self, obj) -> int:
+        return (
+            AlbumDate.objects.filter(photos__in=obj)
+            .values_list("id", flat=True)
+            .first()
+        )
+
+
 class PhotoSerializer(serializers.ModelSerializer):
     square_thumbnail_url = serializers.SerializerMethodField()
     big_thumbnail_url = serializers.SerializerMethodField()
@@ -140,6 +172,7 @@ class PhotoSerializer(serializers.ModelSerializer):
     shared_to = serializers.PrimaryKeyRelatedField(many=True, read_only=True)
     image_path = serializers.SerializerMethodField()
     owner = SimpleUserSerializer(many=False, read_only=True)
+    embedded_media = serializers.SerializerMethodField()
 
     class Meta:
         model = Photo
@@ -161,7 +194,8 @@ class PhotoSerializer(serializers.ModelSerializer):
             "rating",
             "hidden",
             "public",
-            "deleted",
+            "removed",
+            "in_trashcan",
             "shared_to",
             "similar_photos",
             "video",
@@ -178,6 +212,7 @@ class PhotoSerializer(serializers.ModelSerializer):
             "focalLength35Equivalent",
             "digitalZoomRatio",
             "subjectDistance",
+            "embedded_media",
         )
 
     def get_similar_photos(self, obj) -> list:
@@ -208,7 +243,10 @@ class PhotoSerializer(serializers.ModelSerializer):
 
     def get_image_path(self, obj) -> list[str]:
         try:
-            return obj.image_paths
+            paths = []
+            for file in obj.files.all():
+                paths.append(file.path)
+            return paths
         except Exception:
             return ["Missing"]
 
@@ -238,9 +276,69 @@ class PhotoSerializer(serializers.ModelSerializer):
 
     def get_people(self, obj) -> list:
         return [
-            {"name": f.person.name, "face_url": f.image.url, "face_id": f.id}
+            {
+                "name": (
+                    f.person.name
+                    if f.person
+                    else (
+                        f.cluster_person.name
+                        if f.cluster_person
+                        else (
+                            f.classification_person.name
+                            if f.classification_person
+                            else ""
+                        )
+                    )
+                ),
+                "type": (
+                    "user"
+                    if f.person
+                    else (
+                        "cluster"
+                        if f.cluster_person
+                        else ("classification" if f.classification_person else "")
+                    )
+                ),
+                "probability": (
+                    1
+                    if f.person
+                    else (
+                        f.cluster_probability
+                        if f.cluster_person
+                        else (
+                            f.classification_probability
+                            if f.classification_person
+                            else 0
+                        )
+                    )
+                ),
+                "location": {
+                    "top": f.location_top,
+                    "bottom": f.location_bottom,
+                    "left": f.location_left,
+                    "right": f.location_right,
+                },
+                "face_url": f.image.url,
+                "face_id": f.id,
+            }
             for f in obj.faces.all()
         ]
+
+    def get_embedded_media(self, obj: Photo) -> list[dict]:
+        def serialize_file(file):
+            return {
+                "id": file.hash,
+                "type": "video" if file.type == File.VIDEO else "image",
+            }
+
+        embedded_media = obj.main_file.embedded_media.all()
+        if len(embedded_media) == 0:
+            return []
+        return list(
+            map(
+                serialize_file, embedded_media.filter(type__in=[File.VIDEO, File.IMAGE])
+            )
+        )
 
 
 class SharedFromMePhotoThroughSerializer(serializers.ModelSerializer):
@@ -251,5 +349,5 @@ class SharedFromMePhotoThroughSerializer(serializers.ModelSerializer):
         model = Photo.shared_to.through
         fields = ("user_id", "user", "photo")
 
-    def get_photo(self, obj) -> PigPhotoSerilizer:
-        return PigPhotoSerilizer(obj.photo).data
+    def get_photo(self, obj) -> PhotoSummarySerializer:
+        return PhotoSummarySerializer(obj.photo).data

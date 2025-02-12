@@ -8,7 +8,6 @@ from api.util import logger
 
 
 class GroupedPersonPhotosSerializer(serializers.ModelSerializer):
-
     id = serializers.SerializerMethodField()
     grouped_photos = serializers.SerializerMethodField()
 
@@ -16,7 +15,7 @@ class GroupedPersonPhotosSerializer(serializers.ModelSerializer):
         model = Person
         fields = (
             "id",
-            "title",
+            "name",
             "grouped_photos",
         )
 
@@ -35,7 +34,6 @@ class GroupedPersonPhotosSerializer(serializers.ModelSerializer):
 
 class PersonSerializer(serializers.ModelSerializer):
     face_url = serializers.SerializerMethodField()
-    face_count = serializers.SerializerMethodField()
     face_photo_url = serializers.SerializerMethodField()
     video = serializers.SerializerMethodField()
     newPersonName = serializers.CharField(max_length=100, default="", write_only=True)
@@ -54,42 +52,31 @@ class PersonSerializer(serializers.ModelSerializer):
             "cover_photo",
         )
 
-    def get_face_count(self, obj) -> int:
-        return obj.viewable_face_count
-
     def get_face_url(self, obj) -> str:
-        try:
-            face = obj.faces.filter(
-                Q(person_label_is_inferred=False) & Q(photo__hidden=False)
-            ).first()
-            return face.image.url
-        except Exception:
-            return None
+        if obj.cover_face:
+            return "/media/" + obj.cover_face.image.name
+        if obj.faces.count() == 0:
+            return ""
+        return "/media/" + obj.faces.first().image.name
 
     def get_face_photo_url(self, obj) -> str:
         if obj.cover_photo:
             return obj.cover_photo.image_hash
-        first_face = obj.faces.filter(
-            Q(person_label_is_inferred=False) & Q(photo__hidden=False)
-        ).first()
-        if first_face:
-            return first_face.photo.image_hash
-        else:
-            return None
+        if obj.faces.count() == 0:
+            return ""
+        return obj.faces.first().photo.image_hash
 
     def get_video(self, obj) -> str:
         if obj.cover_photo:
             return obj.cover_photo.video
-        first_face = obj.faces.filter(
-            Q(person_label_is_inferred=False) & Q(photo__hidden=False)
-        ).first()
-        if first_face:
-            return first_face.photo.video
-        else:
-            return False
+        if obj.faces.count() == 0:
+            return "False"
+        return obj.faces.first().photo.video
 
     def create(self, validated_data):
         name = validated_data.pop("name")
+        if len(name.strip()) == 0:
+            raise serializers.ValidationError("Name cannot be empty")
         qs = Person.objects.filter(name=name)
         if qs.count() > 0:
             return qs[0]
@@ -110,6 +97,7 @@ class PersonSerializer(serializers.ModelSerializer):
             image_hash = validated_data.pop("cover_photo")
             photo = Photo.objects.filter(image_hash=image_hash).first()
             instance.cover_photo = photo
+            instance.cover_face = photo.faces.filter(person__name=instance.name).first()
             instance.save()
             return instance
         return instance
@@ -133,17 +121,17 @@ class AlbumPersonListSerializer(serializers.ModelSerializer):
         )
 
     def get_photo_count(self, obj) -> int:
-        return obj.filter(Q(person_label_is_inferred=False)).faces.count()
+        return obj.filter(Q(person__is_null=False)).faces.count()
 
     def get_cover_photo_url(self, obj) -> str:
-        first_face = obj.faces.filter(Q(person_label_is_inferred=False)).first()
+        first_face = obj.faces.filter(Q(person__is_null=False)).first()
         if first_face:
             return first_face.photo.square_thumbnail.url
         else:
             return None
 
     def get_face_photo_url(self, obj) -> str:
-        first_face = obj.faces.filter(Q(person_label_is_inferred=False)).first()
+        first_face = obj.faces.filter(Q(person__is_null=False)).first()
         if first_face:
             return first_face.photo.image.url
         else:

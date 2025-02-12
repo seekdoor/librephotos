@@ -1,11 +1,31 @@
 from constance import config as site_config
 from rest_framework import permissions
 
+from api.models import User
+
+
+class IsAdminOrSelf(permissions.BasePermission):
+    def has_object_permission(self, request, view, obj):
+        if request.method in permissions.SAFE_METHODS:
+            return True
+
+        return request.user and request.user.is_staff or obj == request.user
+
+
+class IsAdminOrFirstTimeSetupOrRegistrationAllowed(permissions.BasePermission):
+    def has_permission(self, request, view):
+        if request.method in permissions.SAFE_METHODS:
+            return True
+
+        is_admin = request.user and request.user.is_staff
+        is_first_time_setup = not User.objects.filter(is_superuser=True).exists()
+        is_registration_allowed = bool(site_config.ALLOW_REGISTRATION)
+
+        return is_admin or is_first_time_setup or is_registration_allowed
+
 
 class IsOwnerOrReadOnly(permissions.BasePermission):
-    """
-    Custom permission to only allow owners of an object to edit it.
-    """
+    """Custom permission to only allow owners of an object to edit it."""
 
     def has_object_permission(self, request, view, obj):
         # Read permissions are allowed to any request,
@@ -18,9 +38,7 @@ class IsOwnerOrReadOnly(permissions.BasePermission):
 
 
 class IsUserOrReadOnly(permissions.BasePermission):
-    """
-    Custom permission to only allow owners of an object to edit it.
-    """
+    """Custom permission to only allow owners of an object to edit it."""
 
     def has_object_permission(self, request, view, obj):
         # Read permissions are allowed to any request,
@@ -33,9 +51,7 @@ class IsUserOrReadOnly(permissions.BasePermission):
 
 
 class IsPhotoOrAlbumSharedTo(permissions.BasePermission):
-    """
-    Custom permission to only allow owners of an object to edit it.
-    """
+    """Custom permission to only allow owners of an object to edit it."""
 
     def has_object_permission(self, request, view, obj):
         if obj.public:
@@ -52,9 +68,7 @@ class IsPhotoOrAlbumSharedTo(permissions.BasePermission):
 
 
 class IsRegistrationAllowed(permissions.BasePermission):
-    """
-    Custom permission to only allow if registration is allowed globally.
-    """
+    """Custom permission to only allow if registration is allowed globally."""
 
     def has_permission(self, request, view):
         return bool(site_config.ALLOW_REGISTRATION)

@@ -1,14 +1,17 @@
 import os
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db.models import Q
+from django_q.tasks import Chain
 from rest_framework import serializers
 from rest_framework.exceptions import ValidationError
 
-from api.batch_jobs import create_batch_job
-from api.models import LongRunningJob, Photo, User
+from api.batch_jobs import batch_calculate_clip_embedding
+from api.ml_models import do_all_models_exist, download_models
+from api.models import Photo, User
 from api.serializers.simple import PhotoSuperSimpleSerializer
-from api.util import logger
+from api.util import is_valid_path, logger
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -61,7 +64,14 @@ class UserSerializer(serializers.ModelSerializer):
             "image_scale",
             "save_metadata_to_disk",
             "datetime_rules",
+            "llm_settings",
             "default_timezone",
+            "public_sharing",
+            "face_recognition_model",
+            "min_cluster_size",
+            "confidence_unknown_face",
+            "min_samples",
+            "cluster_selection_epsilon",
         )
 
     def validate_nextcloud_app_password(self, value):
@@ -83,7 +93,9 @@ class UserSerializer(serializers.ModelSerializer):
                 user = User.objects.create_superuser(**validated_data)
             else:
                 user = User.objects.create_user(**validated_data)
-        logger.info("Created user {}".format(user.id))
+        else:
+            user = User.objects.create_user(**validated_data)
+        logger.info(f"Created user {user.id}")
         return user
 
     def update(self, instance, validated_data):
@@ -128,67 +140,88 @@ class UserSerializer(serializers.ModelSerializer):
         if "confidence" in validated_data:
             instance.confidence = validated_data.pop("confidence")
             instance.save()
-            logger.info("Updated confidence for user {}".format(instance.confidence))
+            logger.info(f"Updated confidence for user {instance.confidence}")
         if "confidence_person" in validated_data:
             instance.confidence_person = validated_data.pop("confidence_person")
             instance.save()
             logger.info(
-                "Updated person album confidence for user {}".format(
-                    instance.confidence_person
-                )
+                f"Updated person album confidence for user {instance.confidence_person}"
             )
         if "semantic_search_topk" in validated_data:
             new_semantic_search_topk = validated_data.pop("semantic_search_topk")
 
             if instance.semantic_search_topk == 0 and new_semantic_search_topk > 0:
-                create_batch_job(
-                    LongRunningJob.JOB_CALCULATE_CLIP_EMBEDDINGS,
-                    User.objects.get(id=instance.id),
+                chain = Chain()
+                if not do_all_models_exist():
+                    chain.append(download_models, User.objects.get(id=instance.id))
+                chain.append(
+                    batch_calculate_clip_embedding, User.objects.get(id=instance.id)
                 )
+                chain.run()
 
             instance.semantic_search_topk = new_semantic_search_topk
             instance.save()
             logger.info(
-                "Updated semantic_search_topk for user {}".format(
-                    instance.semantic_search_topk
-                )
+                f"Updated semantic_search_topk for user {instance.semantic_search_topk}"
             )
         if "favorite_min_rating" in validated_data:
             new_favorite_min_rating = validated_data.pop("favorite_min_rating")
             instance.favorite_min_rating = new_favorite_min_rating
             instance.save()
             logger.info(
-                "Updated favorite_min_rating for user {}".format(
-                    instance.favorite_min_rating
-                )
+                f"Updated favorite_min_rating for user {instance.favorite_min_rating}"
             )
         if "save_metadata_to_disk" in validated_data:
             instance.save_metadata_to_disk = validated_data.pop("save_metadata_to_disk")
             instance.save()
             logger.info(
-                "Updated save_metadata_to_disk for user {}".format(
-                    instance.save_metadata_to_disk
-                )
+                f"Updated save_metadata_to_disk for user {instance.save_metadata_to_disk}"
             )
         if "image_scale" in validated_data:
             new_image_scale = validated_data.pop("image_scale")
             instance.image_scale = new_image_scale
             instance.save()
-            logger.info("Updated image_scale for user {}".format(instance.image_scale))
+            logger.info(f"Updated image_scale for user {instance.image_scale}")
         if "datetime_rules" in validated_data:
             new_datetime_rules = validated_data.pop("datetime_rules")
             instance.datetime_rules = new_datetime_rules
             instance.save()
-            logger.info(
-                "Updated datetime_rules for user {}".format(instance.datetime_rules)
-            )
+            logger.info(f"Updated datetime_rules for user {instance.datetime_rules}")
         if "default_timezone" in validated_data:
             new_default_timezone = validated_data.pop("default_timezone")
             instance.default_timezone = new_default_timezone
             instance.save()
             logger.info(
-                "Updated default_timezone for user {}".format(instance.default_timezone)
+                f"Updated default_timezone for user {instance.default_timezone}"
             )
+        if "public_sharing" in validated_data:
+            instance.public_sharing = validated_data.pop("public_sharing")
+            instance.save()
+        if "face_recognition_model" in validated_data:
+            instance.face_recognition_model = validated_data.pop(
+                "face_recognition_model"
+            )
+            instance.save()
+        if "min_cluster_size" in validated_data:
+            instance.min_cluster_size = validated_data.pop("min_cluster_size")
+            instance.save()
+        if "confidence_unknown_face" in validated_data:
+            instance.confidence_unknown_face = validated_data.pop(
+                "confidence_unknown_face"
+            )
+            instance.save()
+        if "min_samples" in validated_data:
+            instance.min_samples = validated_data.pop("min_samples")
+            instance.save()
+        if "cluster_selection_epsilon" in validated_data:
+            instance.cluster_selection_epsilon = validated_data.pop(
+                "cluster_selection_epsilon"
+            )
+            instance.save()
+        if "llm_settings" in validated_data:
+            instance.llm_settings = validated_data.pop("llm_settings")
+            instance.save()
+
         return instance
 
     def get_photo_count(self, obj) -> int:
@@ -202,11 +235,77 @@ class UserSerializer(serializers.ModelSerializer):
             Photo.objects.filter(Q(owner=obj) & Q(public=True))[:10], many=True
         ).data
 
-    def get_avatar_url(self, obj) -> str:
+    def get_avatar_url(self, obj) -> str or None:
         try:
             return obj.avatar.url
         except Exception:
             return None
+
+
+class PublicUserSerializer(serializers.ModelSerializer):
+    public_photo_count = serializers.SerializerMethodField()
+    public_photo_samples = serializers.SerializerMethodField()
+    avatar_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = (
+            "id",
+            "avatar_url",
+            "username",
+            "first_name",
+            "last_name",
+            "public_photo_count",
+            "public_photo_samples",
+        )
+
+    def get_public_photo_count(self, obj) -> int:
+        return Photo.objects.filter(Q(owner=obj) & Q(public=True)).count()
+
+    def get_public_photo_samples(self, obj) -> PhotoSuperSimpleSerializer(many=True):
+        return PhotoSuperSimpleSerializer(
+            Photo.objects.filter(Q(owner=obj) & Q(public=True))[:10], many=True
+        ).data
+
+    def get_avatar_url(self, obj) -> str or None:
+        try:
+            return obj.avatar.url
+        except ValueError:
+            return None
+
+
+class SignupUserSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        extra_kwargs = {
+            "username": {"required": True},
+            "password": {
+                "write_only": True,
+                "required": True,
+                "min_length": 3,  # configurable min password length?
+            },
+            "email": {"required": True},
+            "first_name": {"required": True},
+            "last_name": {"required": True},
+            "is_superuser": {"write_only": True},
+        }
+        fields = (
+            "username",
+            "password",
+            "email",
+            "first_name",
+            "last_name",
+            "is_superuser",
+        )
+
+    def create(self, validated_data):
+        should_be_superuser = User.objects.filter(is_superuser=True).count() == 0
+        user = super().create(validated_data)
+        user.set_password(validated_data.pop("password"))
+        user.is_staff = should_be_superuser
+        user.is_superuser = should_be_superuser
+        user.save()
+        return user
 
 
 class DeleteUserSerializer(serializers.ModelSerializer):
@@ -253,13 +352,19 @@ class ManageUserSerializer(serializers.ModelSerializer):
 
         if "scan_directory" in validated_data:
             new_scan_directory = validated_data.pop("scan_directory")
-            if new_scan_directory != "":
-                if os.path.exists(new_scan_directory):
-                    instance.scan_directory = new_scan_directory
+
+            if new_scan_directory:  # Ensure it's not an empty string
+                abs_new_scan_directory = os.path.abspath(new_scan_directory)
+
+                if not is_valid_path(abs_new_scan_directory, settings.DATA_ROOT):
+                    raise ValidationError(
+                        "Scan directory must be inside the data root."
+                    )
+
+                if os.path.exists(abs_new_scan_directory):
+                    instance.scan_directory = abs_new_scan_directory
                     logger.info(
-                        "Updated scan directory for user {}".format(
-                            instance.scan_directory
-                        )
+                        f"Updated scan directory for user {instance.scan_directory}"
                     )
                 else:
                     raise ValidationError("Scan directory does not exist")

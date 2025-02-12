@@ -3,11 +3,8 @@
 import django.db.models.deletion
 from django.db import migrations, models
 
-import api.models.long_running_job
-
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("api", "0012_add_favorite_min_rating"),
     ]
@@ -56,9 +53,7 @@ class Migration(migrations.Migration):
         migrations.AlterField(
             model_name="longrunningjob",
             name="result",
-            field=models.JSONField(
-                default=api.models.long_running_job.get_default_longrunningjob_result
-            ),
+            field=models.JSONField(default={"progress": {"target": 0, "current": 0}}),
         ),
         migrations.AlterField(
             model_name="photo",

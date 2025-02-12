@@ -1,13 +1,10 @@
-import logging
 import logging.handlers
 import os
 import os.path
 
 import exiftool
 import requests
-from constance import config as site_config
-
-import ownphotos.settings
+from django.conf import settings
 
 logger = logging.getLogger("ownphotos")
 formatter = logging.Formatter(
@@ -15,7 +12,7 @@ formatter = logging.Formatter(
 )
 fileMaxByte = 256 * 1024 * 200  # 100MB
 fileHandler = logging.handlers.RotatingFileHandler(
-    os.path.join(ownphotos.settings.LOGS_ROOT, "ownphotos.log"),
+    os.path.join(settings.LOGS_ROOT, "ownphotos.log"),
     maxBytes=fileMaxByte,
     backupCount=10,
 )
@@ -24,9 +21,24 @@ logger.addHandler(fileHandler)
 logger.setLevel(logging.INFO)
 
 
+def is_valid_path(path, root_path):
+    # Resolve absolute paths to prevent directory traversal attacks
+    abs_path = os.path.abspath(path)
+    abs_root = os.path.abspath(root_path)
+
+    return abs_path.startswith(abs_root)
+
+
+def is_number(s):
+    try:
+        float(s)
+        return True
+    except Exception:
+        return False
+
+
 def convert_to_degrees(values):
-    """
-    Helper function to convert the GPS coordinates stored in the EXIF to degrees in float format
+    """Helper function to convert the GPS coordinates stored in the EXIF to degrees in float format
     :param value:
     :type value: exifread.utils.Ratio
     :rtype: float
@@ -49,36 +61,8 @@ weekdays = {
 }
 
 
-def mapbox_reverse_geocode(lat, lon):
-    mapbox_api_key = site_config.MAP_API_KEY
-
-    if mapbox_api_key == "":
-        return {}
-
-    url = (
-        "https://api.mapbox.com/geocoding/v5/mapbox.places/%f,%f.json?access_token=%s"
-        % (lon, lat, mapbox_api_key)
-    )
-    resp = requests.get(url)
-    if resp.status_code == 200:
-        resp_json = resp.json()
-        search_terms = []
-        if "features" in resp_json.keys():
-            for feature in resp_json["features"]:
-                search_terms.append(feature["text"])
-
-        resp_json["search_text"] = " ".join(search_terms)
-        logger.info("mapbox returned status 200.")
-        return resp_json
-    else:
-        # logger.info('mapbox returned non 200 response.')
-        logger.warning("mapbox returned status {} response.".format(resp.status_code))
-        return {}
-
-
 def get_sidecar_files_in_priority_order(media_file):
-    """
-    Returns a list of possible XMP sidecar files for *media_file*, ordered
+    """Returns a list of possible XMP sidecar files for *media_file*, ordered
     by priority.
 
     """
@@ -89,9 +73,6 @@ def get_sidecar_files_in_priority_order(media_file):
         media_file + ".xmp",
         media_file + ".XMP",
     ]
-
-
-exiftool_instance = exiftool.ExifTool()
 
 
 def _get_existing_metadata_files_reversed(media_file, include_sidecar_files):
@@ -106,52 +87,36 @@ def _get_existing_metadata_files_reversed(media_file, include_sidecar_files):
     return [media_file]
 
 
-def get_metadata(media_file, tags, try_sidecar=True):
-    """
-    Get values for each metadata tag in *tags* from *media_file*.
+def get_metadata(media_file, tags, try_sidecar=True, struct=False):
+    """Get values for each metadata tag in *tags* from *media_file*.
     If *try_sidecar* is `True`, use the value set in any XMP sidecar file
     stored alongside *media_file*.
-
-    If *exiftool_instance* is running, leave it running when returning
-    from this function. Otherwise, start it and then terminate it before
-    returning.
+    If *struct* is `True`, use the exiftool instance which returns structured data
 
     Returns a list with the value of each tag in *tags* or `None` if the
     tag was not found.
 
     """
-    et = exiftool_instance
-    terminate_et = False
-    if not et.running:
-        et.start()
-        terminate_et = True
-
     files_by_reverse_priority = _get_existing_metadata_files_reversed(
         media_file, try_sidecar
     )
 
-    values = []
-    try:
-        for tag in tags:
-            value = None
-            for file in files_by_reverse_priority:
-                retrieved_value = et.get_tag(tag, file)
-                if retrieved_value is not None:
-                    value = retrieved_value
-            values.append(value)
-    finally:
-        if terminate_et:
-            et.terminate()
-    return values
+    json = {
+        "tags": tags,
+        "files_by_reverse_priority": files_by_reverse_priority,
+        "struct": struct,
+    }
+    response = requests.post("http://localhost:8010/get-tags", json=json).json()
+    return response["values"]
 
 
 def write_metadata(media_file, tags, use_sidecar=True):
-    et = exiftool_instance
+    et = exiftool.ExifTool()
     terminate_et = False
     if not et.running:
         et.start()
         terminate_et = True
-
+    # To-Do: Replace with new File Structure
     if use_sidecar:
         file_path = get_sidecar_files_in_priority_order(media_file)[0]
     else:

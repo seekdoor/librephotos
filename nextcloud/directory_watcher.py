@@ -4,13 +4,12 @@ import pathlib
 
 import owncloud as nextcloud
 import pytz
-from django_rq import job
+from django.conf import settings
 
-import api.util as util
+from api import util
 from api.directory_watcher import handle_new_image
 from api.image_similarity import build_image_similarity_index
-from api.models import LongRunningJob, Photo
-from ownphotos import settings
+from api.models import LongRunningJob
 
 
 def isValidNCMedia(file_obj):
@@ -38,7 +37,6 @@ def collect_photos(nc, path, photos):
             collect_photos(nc, x.path, photos)
 
 
-@job
 def scan_photos(user, job_id):
     if LongRunningJob.objects.filter(job_id=job_id).exists():
         lrj = LongRunningJob.objects.get(job_id=job_id)
@@ -59,7 +57,7 @@ def scan_photos(user, job_id):
 
     photos = []
 
-    image_paths = []
+    paths = []
 
     collect_photos(nc, user.nextcloud_scan_directory, photos)
 
@@ -73,7 +71,7 @@ def scan_photos(user, job_id):
         local_path = os.path.join(
             settings.DATA_ROOT, "nextcloud_media", user.username, photo[1:]
         )
-        image_paths.append(local_path)
+        paths.append(local_path)
 
         if not os.path.exists(local_dir):
             pathlib.Path(local_dir).mkdir(parents=True, exist_ok=True)
@@ -83,22 +81,17 @@ def scan_photos(user, job_id):
         util.logger.info("Downloaded photo from nextcloud to " + local_path)
 
     try:
-        image_paths.sort()
-
-        image_paths_to_add = []
-        for image_path in image_paths:
-            if not Photo.objects.filter(image_paths__contains=image_path).exists():
-                image_paths_to_add.append(image_path)
+        paths.sort()
 
         added_photo_count = 0
-        to_add_count = len(image_paths_to_add)
-        for idx, image_path in enumerate(image_paths_to_add):
+        to_add_count = len(paths)
+        for idx, image_path in enumerate(paths):
             util.logger.info("begin handling of photo %d/%d" % (idx + 1, to_add_count))
             handle_new_image(user, image_path, job_id)
             lrj.result = {"progress": {"current": idx + 1, "target": to_add_count}}
             lrj.save()
 
-        util.logger.info("Added {} photos".format(len(image_paths_to_add)))
+        util.logger.info(f"Added {len(paths)} photos")
         build_image_similarity_index(user)
 
         lrj = LongRunningJob.objects.get(job_id=job_id)

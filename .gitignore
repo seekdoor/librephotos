@@ -10,6 +10,9 @@ __pycache__/
 Dockerfile
 entrypoint.sh
 
+# Static assets
+static/
+
 # Nuitka
 manage.build/
 manage.dist/
@@ -58,6 +61,8 @@ coverage.xml
 .hypothesis/
 .pytest_cache/
 cover/
+coco/
+survey/
 
 # Translations
 *.mo
@@ -132,6 +137,9 @@ venv.bak/
 .vs/
 .vscode/
 
+# IntelliJ
+.idea/
+
 # mkdocs documentation
 /site
 
@@ -156,8 +164,6 @@ densecap/data/models/densecap/densecap-pretrained-vgg16.t7
 thumbnails
 media
 samplephotos
-tags
-api/places365/model/
 Conv2d.patch
 Linear.patch
 Sequential.patch
@@ -172,7 +178,11 @@ api/im2txt/models/
 api/im2txt/png/
 *.ipynb
 api/im2txt/*.tar.gz
-api/places365/*.tar.gz
 *.db
 media*
 protected_media
+report_dynamo_export.sarif
+
+# Vim
+*.swp
+*.swo

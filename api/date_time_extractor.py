@@ -42,7 +42,7 @@ REGEXP_NO_TZ = re.compile(
 # Here we get year, month, day from the filename and use the number as microsecond so that
 # media is ordered by that number but all of these images are grouped together separated from
 # other media on that date.
-REGEXP_WHATSAPP = re.compile(r"^(?:IMG|VID)-(\d{4})(\d{2})(\d{2})-WA(\d+)")
+REGEXP_WHATSAPP = re.compile(r"^(?:IMG|VID)[-_](\d{4})(\d{2})(\d{2})(?:[-_]WA(\d+))?")
 REGEXP_WHATSAPP_GROUP_MAPPING = ["year", "month", "day", "microsecond"]
 
 PREDEFINED_REGEXPS = {
@@ -88,10 +88,20 @@ def _extract_no_tz_datetime_from_str(x, regexp=REGEXP_NO_TZ, group_mapping=None)
                     f"Group mapping {how_to_use} is unknown - must be one of {list(REGEXP_GROUP_MAPPINGS.keys())}"
                 )
             ind = REGEXP_GROUP_MAPPINGS[how_to_use]
-            datetime_args[ind] = int(value)
+            # handle case when we have less groups than expected
+            if value is not None:
+                datetime_args[ind] = int(value)
 
     try:
-        return datetime(*datetime_args)
+        parsed_datetime = datetime(*datetime_args)
+        delta = parsed_datetime - datetime.now()
+        if delta.days > 30:
+            logger.error(
+                f"Error while parsing datetime from '{x}': Parsed datetime is {delta.days} in the future."
+            )
+            return None
+
+        return parsed_datetime
     except ValueError:
         logger.error(
             f"Error while trying to create datetime using '{x}': datetime arguments {datetime_args}. Regexp used: '{regexp}'"
@@ -107,8 +117,7 @@ class RuleTypes:
 
 
 class TimeExtractionRule:
-    """
-    The goal is to help extract local time, but for historical reason it is expected the returned
+    """The goal is to help extract local time, but for historical reason it is expected the returned
     datetime will have timezone to be set to pytz.utc (so local time + timezone equal to UTC)..
 
     Some sources of data might give us very rich information, e.g. timestamp + timezone,
@@ -293,8 +302,7 @@ class TimeExtractionRule:
             raise ValueError(f"Unknown rule type {self.rule_type}")
 
     def _get_tz(self, description, gps_lat, gps_lon, user_default_tz):
-        """
-        None is a valid timezone returned here (meaning that we want to use server local time).
+        """None is a valid timezone returned here (meaning that we want to use server local time).
         This is why this function returns a tuple with the first element specifying success of
         determining the timezone, and the second element - the timezone itself.
         """
@@ -444,7 +452,7 @@ DEFAULT_RULES_PARAMS = [
     },
 ]
 
-PREDEFINED_RULES_PARAMS = DEFAULT_RULES_PARAMS + [
+OTHER_RULES_PARAMS = [
     {
         "id": 6,
         "name": "Video creation datetime in UTC timezone (can't find out actual timezone)",
@@ -497,6 +505,21 @@ PREDEFINED_RULES_PARAMS = DEFAULT_RULES_PARAMS + [
         "exif_tag": Tags.GPS_DATE_TIME,
     },
 ]
+
+
+def set_as_default_rule(rule):
+    rule["is_default"] = True
+    return rule
+
+
+def set_as_other_rule(rule):
+    rule["is_default"] = False
+    return rule
+
+
+PREDEFINED_RULES_PARAMS = list(map(set_as_default_rule, DEFAULT_RULES_PARAMS)) + list(
+    map(set_as_other_rule, OTHER_RULES_PARAMS)
+)
 
 
 def _as_json(configs):
